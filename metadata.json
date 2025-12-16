@@ -1,0 +1,5 @@
+{
+  "name": "Receipt2Sheet AI",
+  "description": "Extracts structured data from receipt images for easy export to Google Sheets using Gemini Vision.",
+  "requestFramePermissions": []
+}
