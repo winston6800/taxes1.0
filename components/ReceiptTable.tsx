@@ -93,7 +93,7 @@ export const ReceiptTable: React.FC<ReceiptTableProps> = ({ entries, onDelete, o
                     )}
                     
                     <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-10 transition-all flex items-center justify-center">
-                      <ExternalLink className="text-gray-900 opacity-0 group-hover:opacity-100 w-4 h-4" />
+                      <ExternalLink className="text-gray-900 opacity-0 group-hover:opacity-10 w-4 h-4" />
                     </div>
                   </div>
                 </td>
@@ -152,8 +152,13 @@ export const ReceiptTable: React.FC<ReceiptTableProps> = ({ entries, onDelete, o
                 </td>
                 <td className="relative whitespace-nowrap py-4 pl-3 pr-4 text-right text-sm font-medium sm:pr-6">
                   <button
-                    onClick={() => onDelete(entry.id)}
+                    onClick={() => {
+                        if (window.confirm('Are you sure you want to delete this receipt?')) {
+                            onDelete(entry.id);
+                        }
+                    }}
                     className="text-gray-400 hover:text-red-600 transition-colors"
+                    title="Delete receipt"
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>

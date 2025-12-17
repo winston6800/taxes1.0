@@ -1,5 +1,12 @@
+export interface Batch {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
 export interface ReceiptEntry {
   id: string; // Unique ID for React keys
+  batchId: string; // Links entry to a specific batch
   invoiceNumber: number; // Sequential number for the sheet
   date: string;
   explanation: string;

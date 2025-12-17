@@ -1,10 +1,78 @@
 import { get, set, del, clear, createStore } from 'idb-keyval';
-import { ReceiptEntry } from '../types';
+import { ReceiptEntry, Batch } from '../types';
 
 // Create a custom store for our images
 const customStore = createStore('receipt2sheet-db', 'images');
 
 const STORAGE_KEY = 'receipts_data_v1';
+const BATCHES_KEY = 'batches_meta_v1';
+
+// --- BATCH MANAGEMENT ---
+
+export const loadBatches = (): Batch[] => {
+  const raw = localStorage.getItem(BATCHES_KEY);
+  if (!raw) {
+    // Default initial batch if none exists
+    const defaultBatch: Batch = {
+        id: 'default',
+        name: 'Batch 1',
+        createdAt: new Date().toISOString()
+    };
+    saveBatches([defaultBatch]);
+    return [defaultBatch];
+  }
+  return JSON.parse(raw);
+};
+
+export const saveBatches = (batches: Batch[]) => {
+  localStorage.setItem(BATCHES_KEY, JSON.stringify(batches));
+};
+
+export const createBatch = (name: string): Batch => {
+    const batches = loadBatches();
+    const newBatch: Batch = {
+        id: crypto.randomUUID(),
+        name,
+        createdAt: new Date().toISOString()
+    };
+    batches.push(newBatch);
+    saveBatches(batches);
+    return newBatch;
+};
+
+export const deleteBatch = async (batchId: string) => {
+    try {
+        // 1. Remove Batch Meta first (Source of truth for the list)
+        const batches = loadBatches();
+        const newBatches = batches.filter(b => b.id !== batchId);
+        saveBatches(newBatches);
+
+        // 2. Remove all entries associated with this batch
+        const allEntries = loadMetadata();
+        const batchEntries = allEntries.filter((e: any) => e.batchId === batchId);
+        const keepEntries = allEntries.filter((e: any) => e.batchId !== batchId);
+        
+        // 3. Update local storage metadata immediately
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(keepEntries));
+
+        // 4. Delete images from IDB (Best effort)
+        // We do this last and in a separate try/catch loop so one failure doesn't stop everything
+        // or if this fails, the metadata is already gone so the user perceives it as deleted.
+        for (const entry of batchEntries) {
+            try {
+                await del(entry.id, customStore);
+            } catch (e) {
+                console.warn(`Failed to delete image for entry ${entry.id}`, e);
+            }
+        }
+    } catch (error) {
+        console.error("Critical error in deleteBatch", error);
+        throw error;
+    }
+};
+
+
+// --- ENTRY MANAGEMENT ---
 
 // Load all entries from local storage and rehydrate images from IndexedDB
 export const loadEntries = async (): Promise<ReceiptEntry[]> => {
@@ -13,6 +81,18 @@ export const loadEntries = async (): Promise<ReceiptEntry[]> => {
 
   try {
     const parsed: Omit<ReceiptEntry, 'imageUrl'>[] = JSON.parse(rawData);
+
+    // Migration: If entries don't have a batchId, assign them to 'default'
+    let needsMigration = false;
+    parsed.forEach(p => {
+        if (!p.batchId) {
+            p.batchId = 'default';
+            needsMigration = true;
+        }
+    });
+    if (needsMigration) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+    }
 
     // Fetch images in parallel
     const entries = await Promise.all(parsed.map(async (item) => {
@@ -42,7 +122,6 @@ export const saveEntry = async (entry: ReceiptEntry, file: Blob) => {
     await set(entry.id, file, customStore);
   } catch (e) {
     console.error("Failed to save image to DB", e);
-    // Continue saving metadata even if image fails, though not ideal
   }
 
   // 2. Save Metadata to LocalStorage (exclude blob URL)
@@ -76,13 +155,14 @@ export const removeEntry = async (id: string) => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
 }
 
-// Clear all entries
+// Clear all entries (Wipe everything)
 export const clearAllEntries = async () => {
     // 1. Clear IDB
     await clear(customStore);
     
     // 2. Clear LocalStorage
     localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(BATCHES_KEY);
 }
 
 // Helper to just get the array from LS without async logic

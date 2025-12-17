@@ -44,7 +44,7 @@ const receiptSchema: Schema = {
   required: ["date", "explanation", "store", "category", "amount"],
 };
 
-export const processReceiptImage = async (file: File, nextInvoiceId: number): Promise<ReceiptEntry> => {
+export const processReceiptImage = async (file: File, nextInvoiceId: number): Promise<Omit<ReceiptEntry, 'batchId'>> => {
   const apiKey = process.env.API_KEY;
   if (!apiKey) {
     throw new Error("API Key is missing.");

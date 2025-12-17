@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { 
   Upload, 
   FileSpreadsheet, 
@@ -9,11 +9,26 @@ import {
   Image as ImageIcon,
   Check,
   AlertCircle,
-  Trash2
+  Trash2,
+  History,
+  FolderPlus,
+  FolderOpen,
+  Edit2,
+  X
 } from 'lucide-react';
 import { processReceiptImage } from './services/geminiService';
-import { saveEntry, removeEntry, updateEntry, loadEntries, clearAllEntries } from './services/storageService';
-import { ReceiptEntry, QueueItem } from './types';
+import { 
+    saveEntry, 
+    removeEntry, 
+    updateEntry, 
+    loadEntries, 
+    // clearAllEntries, // Unused in this version
+    loadBatches, 
+    saveBatches, 
+    createBatch, 
+    deleteBatch 
+} from './services/storageService';
+import { ReceiptEntry, QueueItem, Batch } from './types';
 import { ReceiptTable } from './components/ReceiptTable';
 import { EmptyState } from './components/EmptyState';
 
@@ -21,77 +36,113 @@ import { EmptyState } from './components/EmptyState';
 const MAX_CONCURRENT_UPLOADS = 3;
 
 const App: React.FC = () => {
-  const [entries, setEntries] = useState<ReceiptEntry[]>([]);
+  // Global State
+  const [allEntries, setAllEntries] = useState<ReceiptEntry[]>([]);
+  const [batches, setBatches] = useState<Batch[]>([]);
+  const [activeBatchId, setActiveBatchId] = useState<string>('default');
+  
+  // Queue State
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  
+  // UI State
   const [dragActive, setDragActive] = useState(false);
   const [copied, setCopied] = useState(false);
   const [loadingStorage, setLoadingStorage] = useState(true);
+  const [showHistory, setShowHistory] = useState(false);
+  const [isEditingBatchName, setIsEditingBatchName] = useState(false);
   
-  // Ref to track the highest invoice number assigned so far.
-  // We use a ref to prevent race conditions during rapid uploads.
+  // Refs
   const lastAssignedIdRef = useRef<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const batchNameInputRef = useRef<HTMLInputElement>(null);
 
-  // Stats for the progress bar
+  // Derived State
+  const currentBatch = useMemo(() => batches.find(b => b.id === activeBatchId), [batches, activeBatchId]);
+  
+  const displayedEntries = useMemo(() => {
+    return allEntries
+        .filter(e => e.batchId === activeBatchId)
+        .sort((a, b) => a.invoiceNumber - b.invoiceNumber);
+  }, [allEntries, activeBatchId]);
+
+  // Stats
   const totalInQueue = queue.length;
   const completedInQueue = queue.filter(i => i.status === 'COMPLETE').length;
   const errorsInQueue = queue.filter(i => i.status === 'ERROR').length;
   const pendingOrProcessing = queue.filter(i => i.status === 'PENDING' || i.status === 'PROCESSING').length;
-  
-  // Load persisted data on mount
+
+  // --- Initialization ---
   useEffect(() => {
     const init = async () => {
       try {
-        const saved = await loadEntries();
-        // Ensure loaded entries are sorted
-        const sorted = saved.sort((a, b) => a.invoiceNumber - b.invoiceNumber);
-        setEntries(sorted);
+        // Load Batches
+        let loadedBatches = loadBatches();
         
-        // Initialize our counter based on existing data
-        const maxId = sorted.reduce((max, e) => Math.max(max, e.invoiceNumber), 0);
-        lastAssignedIdRef.current = maxId;
+        // Safety check: Ensure at least one batch exists
+        if (loadedBatches.length === 0) {
+            const defaultBatch = createBatch("Batch 1");
+            loadedBatches = [defaultBatch];
+        }
+        
+        setBatches(loadedBatches);
+        
+        // Ensure we have a valid active batch
+        if (!loadedBatches.find(b => b.id === activeBatchId)) {
+            setActiveBatchId(loadedBatches[loadedBatches.length - 1].id);
+        }
+
+        // Load Entries
+        const saved = await loadEntries();
+        setAllEntries(saved);
+
       } catch (e) {
-        console.error("Failed to load receipts", e);
+        console.error("Failed to load data", e);
       } finally {
         setLoadingStorage(false);
       }
     };
     init();
-  }, []);
+  }, []); // Only run once on mount
 
-  // --- Queue Processor Effect ---
+  // Update Invoice Counter when switching batches
+  useEffect(() => {
+    if (displayedEntries.length > 0) {
+        const maxId = displayedEntries.reduce((max, e) => Math.max(max, e.invoiceNumber), 0);
+        lastAssignedIdRef.current = maxId;
+    } else {
+        lastAssignedIdRef.current = 0;
+    }
+  }, [displayedEntries, activeBatchId]);
+
+  // --- Queue Processor ---
   useEffect(() => {
     const processQueue = async () => {
       const processingCount = queue.filter(item => item.status === 'PROCESSING').length;
       
-      // If we have capacity and items waiting
       if (processingCount < MAX_CONCURRENT_UPLOADS) {
         const nextItem = queue.find(item => item.status === 'PENDING');
         
         if (nextItem) {
-          // Mark as processing
           setQueue(prev => prev.map(i => i.id === nextItem.id ? { ...i, status: 'PROCESSING' } : i));
 
           try {
             // Process with AI
-            // We pass the PRE-ASSIGNED number to the service
             const entry = await processReceiptImage(nextItem.file, nextItem.assignedInvoiceNumber); 
 
             let fullEntry: ReceiptEntry;
             
-            setEntries(prev => {
+            setAllEntries(prev => {
                fullEntry = {
                  ...entry,
-                 invoiceNumber: nextItem.assignedInvoiceNumber, // Enforce the assigned number
+                 batchId: activeBatchId, // Bind to current batch
+                 invoiceNumber: nextItem.assignedInvoiceNumber,
                  imageUrl: URL.createObjectURL(nextItem.file), 
                  fileName: nextItem.file.name
                };
                
-               // Persist to storage (async side effect)
                saveEntry(fullEntry, nextItem.file).catch(err => console.error("Save failed", err));
 
-               // Return a sorted list so strict order is maintained in UI
-               return [...prev, fullEntry].sort((a, b) => a.invoiceNumber - b.invoiceNumber);
+               return [...prev, fullEntry];
             });
 
             setQueue(prev => prev.map(i => i.id === nextItem.id ? { ...i, status: 'COMPLETE' } : i));
@@ -106,20 +157,17 @@ const App: React.FC = () => {
     if (pendingOrProcessing > 0) {
       processQueue();
     }
-  }, [queue, pendingOrProcessing]);
+  }, [queue, pendingOrProcessing, activeBatchId]);
 
 
-  // --- Handlers ---
+  // --- Event Handlers ---
 
   const handleFileUpload = (files: FileList | null) => {
     if (!files || files.length === 0) return;
-
-    // Convert to array
     const fileArray = Array.from(files);
     
-    // Assign IDs sequentially starting from the last known max
     const newItems: QueueItem[] = fileArray.map(file => {
-        lastAssignedIdRef.current += 1; // Increment for every file
+        lastAssignedIdRef.current += 1;
         return {
             id: crypto.randomUUID(),
             file,
@@ -129,58 +177,125 @@ const App: React.FC = () => {
     });
 
     setQueue(prev => [...prev, ...newItems]);
-    
-    // Reset input
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleDelete = (id: string) => {
-    setEntries(prev => prev.filter(e => e.id !== id));
+  const handleDeleteEntry = (id: string) => {
+    setAllEntries(prev => prev.filter(e => e.id !== id));
     removeEntry(id).catch(err => console.error("Delete failed", err));
   };
 
-  const handleClearAll = async () => {
-    if (window.confirm("Are you sure you want to delete ALL receipts? This action cannot be undone.")) {
-        setEntries([]);
-        lastAssignedIdRef.current = 0; // Reset counter
-        await clearAllEntries();
+  const handleUpdateEntry = (id: string, field: keyof ReceiptEntry, value: string | number) => {
+    setAllEntries(prev => prev.map(e => {
+        if (e.id === id) {
+            const updated = { ...e, [field]: value };
+            updateEntry(updated);
+            return updated;
+        }
+        return e;
+    }));
+  };
+
+  // --- Batch Actions ---
+
+  const handleCreateBatch = () => {
+    const name = `Batch ${batches.length + 1}`;
+    const newBatch = createBatch(name);
+    setBatches(prev => [...prev, newBatch]);
+    setActiveBatchId(newBatch.id);
+    lastAssignedIdRef.current = 0; // Reset for new batch
+    setShowHistory(false); // Mobile UX
+  };
+
+  const handleDeleteBatch = async (batchId: string, e: React.MouseEvent) => {
+    // Explicitly prevent default and propagation
+    e.preventDefault();
+    e.stopPropagation(); 
+    
+    if (!window.confirm("Are you sure you want to delete this batch and all its receipts?")) {
+        return;
+    }
+
+    try {
+        await deleteBatch(batchId);
+        
+        // Refresh batches from source of truth
+        let currentBatches = loadBatches();
+        
+        // Handle case where we deleted the last batch
+        if (currentBatches.length === 0) {
+            const newBatch = createBatch("Batch 1");
+            currentBatches = [newBatch];
+        }
+        
+        setBatches(currentBatches);
+        setAllEntries(prev => prev.filter(entry => entry.batchId !== batchId));
+
+        // If we deleted the active batch, switch to another one
+        if (activeBatchId === batchId) {
+             // Switch to the last available batch
+             setActiveBatchId(currentBatches[currentBatches.length - 1].id);
+        }
+    } catch (err) {
+        console.error("Failed to delete batch", err);
+        alert("An error occurred while deleting the batch.");
     }
   };
 
-  const handleUpdate = (id: string, field: keyof ReceiptEntry, value: string | number) => {
-    setEntries(prev => {
-        const newEntries = prev.map(e => {
-            if (e.id === id) {
-                const updated = { ...e, [field]: value };
-                // Persist update
-                updateEntry(updated);
-                return updated;
-            }
-            return e;
-        });
-        
-        // If the user manually changes an invoice number, we should resort
-        if (field === 'invoiceNumber') {
-            return newEntries.sort((a, b) => a.invoiceNumber - b.invoiceNumber);
-        }
-        
-        return newEntries;
+  const handleRenameBatch = (name: string) => {
+    if (!name.trim()) return;
+    const updatedBatches = batches.map(b => b.id === activeBatchId ? { ...b, name } : b);
+    setBatches(updatedBatches);
+    saveBatches(updatedBatches);
+  };
+
+  // CSV Export for CURRENT batch
+  const downloadCSV = () => {
+    const headers = ["invoice#", "date", "explanation", "store", "repairs", "utilities", "filename"];
+    const rows = displayedEntries.map(e => [
+      e.invoiceNumber,
+      e.date,
+      `"${e.explanation.replace(/"/g, '""')}"`,
+      `"${e.store.replace(/"/g, '""')}"`,
+      e.repairs || 0,
+      e.utilities || 0,
+      `"${e.fileName.replace(/"/g, '""')}"`
+    ]);
+    
+    const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `${currentBatch?.name || 'receipts'}_export.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const copyToClipboard = () => {
+    const headers = ["invoice#", "date", "explanation", "store", "repairs", "utilities", "filename"];
+    const rows = displayedEntries.map(e => [
+      e.invoiceNumber,
+      e.date,
+      e.explanation,
+      e.store,
+      e.repairs || '', 
+      e.utilities || '',
+      e.fileName
+    ]);
+    const tsvContent = [headers.join('\t'), ...rows.map(r => r.join('\t'))].join('\n');
+    navigator.clipboard.writeText(tsvContent).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
     });
   };
 
-  const clearCompletedQueue = () => {
-    setQueue(prev => prev.filter(i => i.status !== 'COMPLETE'));
-  };
-
-  // Drag and Drop
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setDragActive(true);
-    } else if (e.type === "dragleave") {
-      setDragActive(false);
-    }
+    if (e.type === "dragenter" || e.type === "dragover") setDragActive(true);
+    else if (e.type === "dragleave") setDragActive(false);
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -192,65 +307,10 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // Export to CSV
-  const downloadCSV = () => {
-    const headers = ["invoice#", "date", "explanation", "store", "repairs", "utilities", "filename"];
-    const rows = entries.map(e => [
-      e.invoiceNumber,
-      e.date,
-      `"${e.explanation.replace(/"/g, '""')}"`,
-      `"${e.store.replace(/"/g, '""')}"`,
-      e.repairs || 0,
-      e.utilities || 0,
-      `"${e.fileName.replace(/"/g, '""')}"`
-    ]);
-    
-    const csvContent = [
-      headers.join(','), 
-      ...rows.map(r => r.join(','))
-    ].join('\n');
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `receipts_export_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  // Copy to Clipboard
-  const copyToClipboard = () => {
-    const headers = ["invoice#", "date", "explanation", "store", "repairs", "utilities", "filename"];
-    const rows = entries.map(e => [
-      e.invoiceNumber,
-      e.date,
-      e.explanation,
-      e.store,
-      e.repairs || '', 
-      e.utilities || '',
-      e.fileName
-    ]);
-
-    const tsvContent = [
-      headers.join('\t'), 
-      ...rows.map(r => r.join('\t'))
-    ].join('\n');
-
-    navigator.clipboard.writeText(tsvContent).then(() => {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-    });
-  };
-
   if (loadingStorage) {
     return (
         <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-            <div className="flex flex-col items-center">
-                <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
-                <p className="text-gray-500 font-medium">Restoring your session...</p>
-            </div>
+            <Loader2 className="w-10 h-10 text-indigo-600 animate-spin" />
         </div>
     );
   }
@@ -258,20 +318,56 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-gray-900">
       
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-10 shadow-sm">
+      {/* Top Navigation */}
+      <header className="bg-white border-b border-gray-200 sticky top-0 z-20 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
             <div className="flex items-center space-x-3">
-                <div className="bg-indigo-600 p-2 rounded-lg">
-                    <FileSpreadsheet className="h-6 w-6 text-white" />
+                 <button 
+                    onClick={() => setShowHistory(!showHistory)}
+                    className={`p-2 rounded-md transition-colors ${showHistory ? 'bg-indigo-50 text-indigo-600' : 'text-gray-500 hover:bg-gray-100'}`}
+                >
+                    <History className="w-5 h-5" />
+                </button>
+                <div className="flex items-center space-x-2">
+                     <div className="bg-indigo-600 p-2 rounded-lg hidden sm:block">
+                        <FileSpreadsheet className="h-5 w-5 text-white" />
+                    </div>
+                    
+                    {/* Editable Batch Name */}
+                    {isEditingBatchName ? (
+                        <input
+                            ref={batchNameInputRef}
+                            type="text"
+                            defaultValue={currentBatch?.name}
+                            onBlur={(e) => {
+                                handleRenameBatch(e.target.value);
+                                setIsEditingBatchName(false);
+                            }}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                    handleRenameBatch(e.currentTarget.value);
+                                    setIsEditingBatchName(false);
+                                }
+                            }}
+                            autoFocus
+                            className="text-lg font-bold text-gray-900 border-b-2 border-indigo-500 focus:outline-none bg-transparent px-1"
+                        />
+                    ) : (
+                        <div className="flex items-center group cursor-pointer" onClick={() => setIsEditingBatchName(true)}>
+                            <h1 className="text-lg sm:text-xl font-bold text-gray-900 tracking-tight mr-2">
+                                {currentBatch?.name || 'Receipt2Sheet'}
+                            </h1>
+                            <Edit2 className="w-4 h-4 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </div>
+                    )}
                 </div>
-                <h1 className="text-xl font-bold text-gray-900 tracking-tight">Receipt2Sheet AI</h1>
             </div>
+            
             <div className="flex items-center space-x-4">
-                <div className="hidden sm:flex flex-col items-end mr-4">
-                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Total Value</span>
+                <div className="hidden md:flex flex-col items-end mr-4">
+                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Total Batch Value</span>
                    <span className="text-sm font-bold text-gray-900 font-mono">
-                     {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(entries.reduce((sum, e) => sum + (e.repairs || 0) + (e.utilities || 0), 0))}
+                     {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(displayedEntries.reduce((sum, e) => sum + (e.repairs || 0) + (e.utilities || 0), 0))}
                    </span>
                 </div>
                 <a 
@@ -280,186 +376,219 @@ const App: React.FC = () => {
                     rel="noreferrer"
                     className="text-sm text-gray-500 hover:text-indigo-600 transition-colors hidden sm:block font-medium"
                 >
-                    Open Google Sheets &rarr;
+                    Open Sheets &rarr;
                 </a>
             </div>
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-            
-            {/* Left Column: Uploader & Queue Stats - Sticky for better UX with long lists */}
-            <div className="lg:col-span-1 space-y-6 lg:sticky lg:top-24 h-fit">
+      {/* Main Layout with Sidebar */}
+      <div className="flex-1 max-w-7xl w-full mx-auto flex relative">
+          
+          {/* History Sidebar (Collapsible) */}
+          <div className={`
+            fixed inset-y-0 left-0 z-30 w-64 bg-white border-r border-gray-200 transform transition-transform duration-300 ease-in-out lg:relative lg:translate-x-0
+            ${showHistory ? 'translate-x-0 shadow-2xl lg:shadow-none' : '-translate-x-full lg:hidden'}
+          `}>
+             <div className="h-full flex flex-col">
+                <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+                    <h2 className="font-semibold text-gray-900">Batch History</h2>
+                    <button onClick={() => setShowHistory(false)} className="lg:hidden text-gray-500"><X className="w-5 h-5"/></button>
+                </div>
                 
-                {/* Upload Area */}
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                    <div className="p-6">
-                        <h2 className="text-lg font-semibold text-gray-900 mb-1">Add Receipts</h2>
-                        <p className="text-sm text-gray-500 mb-6">Queue up multiple files. We process them in parallel.</p>
-                        
+                <div className="p-3">
+                    <button 
+                        onClick={handleCreateBatch}
+                        className="w-full flex items-center justify-center space-x-2 py-2 px-4 bg-indigo-50 text-indigo-700 rounded-lg hover:bg-indigo-100 transition-colors font-medium text-sm"
+                    >
+                        <FolderPlus className="w-4 h-4" />
+                        <span>New Batch</span>
+                    </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto px-3 space-y-1 pb-4">
+                    {batches.map(batch => (
                         <div 
-                            className={`relative border-2 border-dashed rounded-xl p-8 text-center transition-all duration-200 ease-in-out cursor-pointer ${
-                                dragActive ? 'border-indigo-500 bg-indigo-50' : 'border-gray-300 hover:border-indigo-400 hover:bg-gray-50'
+                            key={batch.id}
+                            className={`group flex items-center justify-between rounded-lg mb-1 overflow-hidden cursor-pointer ${
+                                activeBatchId === batch.id 
+                                ? 'bg-indigo-600 text-white shadow-md' 
+                                : 'text-gray-700 hover:bg-gray-100'
                             }`}
-                            onDragEnter={handleDrag}
-                            onDragLeave={handleDrag}
-                            onDragOver={handleDrag}
-                            onDrop={handleDrop}
-                            onClick={() => fileInputRef.current?.click()}
                         >
-                            <input
-                                ref={fileInputRef}
-                                type="file"
-                                accept="image/*,application/pdf"
-                                multiple
-                                className="hidden"
-                                onChange={(e) => handleFileUpload(e.target.files)}
-                            />
-                            
-                            <div className="flex flex-col items-center justify-center space-y-3">
-                                <div className={`p-3 rounded-full transition-colors ${pendingOrProcessing > 0 ? 'bg-green-50 text-green-600' : 'bg-indigo-50 text-indigo-600'}`}>
-                                    {pendingOrProcessing > 0 ? <Plus className="w-6 h-6" /> : <Upload className="w-6 h-6" />}
+                            {/* Selection Area - Click here to switch */}
+                            <div 
+                                className="flex-1 p-3 flex items-center overflow-hidden"
+                                onClick={() => {
+                                    setActiveBatchId(batch.id);
+                                    if (window.innerWidth < 1024) setShowHistory(false);
+                                }}
+                            >
+                                <FolderOpen className={`w-4 h-4 mr-3 flex-shrink-0 ${activeBatchId === batch.id ? 'text-indigo-200' : 'text-gray-400'}`} />
+                                <div className="flex flex-col truncate">
+                                    <span className="font-medium text-sm truncate">{batch.name}</span>
+                                    <span className={`text-xs ${activeBatchId === batch.id ? 'text-indigo-200' : 'text-gray-400'}`}>
+                                        {new Date(batch.createdAt).toLocaleDateString()}
+                                    </span>
                                 </div>
-                                <div>
-                                    <p className="text-sm font-medium text-gray-900">
-                                        {pendingOrProcessing > 0 ? "Add more receipts" : "Drop files here"}
-                                    </p>
-                                    <p className="text-xs text-gray-500 mt-1">or click to browse (Images & PDF)</p>
+                            </div>
+                            
+                            {/* Delete Button Area - Separated click target */}
+                            <div className="pr-2 flex items-center">
+                                <button 
+                                    onClick={(e) => handleDeleteBatch(batch.id, e)}
+                                    className={`p-2 rounded-md transition-colors ${
+                                        activeBatchId === batch.id 
+                                        ? 'text-indigo-100 hover:bg-indigo-700 hover:text-white' 
+                                        : 'text-gray-400 hover:bg-red-50 hover:text-red-600 lg:opacity-0 group-hover:opacity-100 opacity-100'
+                                    }`}
+                                    title="Delete Batch"
+                                >
+                                    <Trash2 className="w-4 h-4" />
+                                </button>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+             </div>
+          </div>
+
+          {/* Main Content Area */}
+          <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8">
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+                
+                {/* Uploader Column */}
+                <div className="lg:col-span-1 space-y-6 lg:sticky lg:top-24 h-fit">
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                        <div className="p-6">
+                            <h2 className="text-lg font-semibold text-gray-900 mb-1">Upload Receipts</h2>
+                            <p className="text-sm text-gray-500 mb-6">Adding to: <span className="font-medium text-indigo-600">{currentBatch?.name}</span></p>
+                            
+                            <div 
+                                className={`relative border-2 border-dashed rounded-xl p-8 text-center transition-all duration-200 ease-in-out cursor-pointer ${
+                                    dragActive ? 'border-indigo-500 bg-indigo-50' : 'border-gray-300 hover:border-indigo-400 hover:bg-gray-50'
+                                }`}
+                                onDragEnter={handleDrag}
+                                onDragLeave={handleDrag}
+                                onDragOver={handleDrag}
+                                onDrop={handleDrop}
+                                onClick={() => fileInputRef.current?.click()}
+                            >
+                                <input
+                                    ref={fileInputRef}
+                                    type="file"
+                                    accept="image/*,application/pdf"
+                                    multiple
+                                    className="hidden"
+                                    onChange={(e) => handleFileUpload(e.target.files)}
+                                />
+                                
+                                <div className="flex flex-col items-center justify-center space-y-3">
+                                    <div className={`p-3 rounded-full transition-colors ${pendingOrProcessing > 0 ? 'bg-green-50 text-green-600' : 'bg-indigo-50 text-indigo-600'}`}>
+                                        {pendingOrProcessing > 0 ? <Plus className="w-6 h-6" /> : <Upload className="w-6 h-6" />}
+                                    </div>
+                                    <div>
+                                        <p className="text-sm font-medium text-gray-900">
+                                            {pendingOrProcessing > 0 ? "Add more" : "Drop files"}
+                                        </p>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
-                </div>
 
-                {/* Queue Status Panel */}
-                {totalInQueue > 0 && (
-                  <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                      <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-                          <h3 className="font-semibold text-gray-900 text-sm">Processing Queue</h3>
-                          {completedInQueue > 0 && (
-                            <button 
-                                onClick={clearCompletedQueue}
-                                className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
-                            >
-                                Clear finished
-                            </button>
-                          )}
-                      </div>
-                      <div className="p-4 space-y-4">
-                          {/* Progress Bar */}
-                          <div>
-                            <div className="flex justify-between text-xs mb-1">
-                                <span className="text-gray-500">Progress ({completedInQueue}/{totalInQueue})</span>
-                                <span className="text-gray-700 font-medium">{Math.round((completedInQueue / totalInQueue) * 100)}%</span>
-                            </div>
-                            <div className="w-full bg-gray-200 rounded-full h-2">
-                                <div 
-                                  className="bg-indigo-600 h-2 rounded-full transition-all duration-500 ease-out"
-                                  style={{ width: `${(completedInQueue / totalInQueue) * 100}%` }}
-                                ></div>
-                            </div>
+                    {/* Queue Status */}
+                    {totalInQueue > 0 && (
+                      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                          <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+                              <h3 className="font-semibold text-gray-900 text-sm">Processing Queue</h3>
+                              {completedInQueue > 0 && (
+                                <button 
+                                    onClick={() => setQueue(prev => prev.filter(i => i.status !== 'COMPLETE'))}
+                                    className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+                                >
+                                    Clear finished
+                                </button>
+                              )}
                           </div>
-
-                          <div className="flex flex-wrap gap-3 text-xs text-gray-500">
-                             <div className="flex items-center">
-                                <Check className="w-3 h-3 mr-1 text-green-500" />
-                                {completedInQueue} Done
-                             </div>
-                             {pendingOrProcessing > 0 && (
-                                 <div className="flex items-center font-medium text-blue-600">
-                                    <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                                    {pendingOrProcessing} Processing...
-                                 </div>
-                             )}
-                             {errorsInQueue > 0 && (
-                                <div className="flex items-center text-red-600">
-                                    <AlertCircle className="w-3 h-3 mr-1" />
-                                    {errorsInQueue} Failed
+                          <div className="p-4 space-y-4">
+                              <div>
+                                <div className="flex justify-between text-xs mb-1">
+                                    <span className="text-gray-500">Progress</span>
+                                    <span className="text-gray-700 font-medium">{Math.round((completedInQueue / totalInQueue) * 100)}%</span>
                                 </div>
-                             )}
+                                <div className="w-full bg-gray-200 rounded-full h-2">
+                                    <div 
+                                      className="bg-indigo-600 h-2 rounded-full transition-all duration-500 ease-out"
+                                      style={{ width: `${(completedInQueue / totalInQueue) * 100}%` }}
+                                    ></div>
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap gap-3 text-xs text-gray-500">
+                                 {pendingOrProcessing > 0 && <div className="flex items-center text-blue-600"><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Processing</div>}
+                                 {errorsInQueue > 0 && <div className="flex items-center text-red-600"><AlertCircle className="w-3 h-3 mr-1" /> Errors</div>}
+                              </div>
                           </div>
-                          
-                          {errorsInQueue > 0 && (
-                            <div className="text-xs text-red-600 bg-red-50 p-2 rounded border border-red-100">
-                               Some files failed. Check the table or retry.
-                            </div>
-                          )}
                       </div>
-                  </div>
-                )}
-
-                <div className="bg-gradient-to-br from-indigo-900 to-indigo-800 rounded-xl p-6 text-white shadow-lg relative overflow-hidden">
-                    <div className="relative z-10">
-                        <h3 className="font-semibold text-lg mb-2 flex items-center"><div className="w-2 h-2 bg-green-400 rounded-full mr-2"></div>Pro Tip</h3>
-                        <p className="text-indigo-100 text-sm leading-relaxed">
-                            Data is now saved automatically! You can close the tab and come back later.
-                        </p>
-                    </div>
-                    {/* Decorative Background Element */}
-                    <div className="absolute top-0 right-0 -mr-8 -mt-8 w-32 h-32 bg-white opacity-10 rounded-full blur-2xl"></div>
-                </div>
-            </div>
-
-            {/* Right Column: Data Table */}
-            <div className="lg:col-span-3 flex flex-col h-full min-h-[500px]">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 space-y-2 sm:space-y-0">
-                    <h2 className="text-lg font-semibold text-gray-900 flex items-center">
-                        <ImageIcon className="w-5 h-5 text-gray-400 mr-2" />
-                        Extracted Data <span className="ml-2 bg-gray-100 text-gray-600 py-0.5 px-2 rounded-full text-xs">{entries.length} items</span>
-                    </h2>
-                    
-                    <div className="flex space-x-2">
-                        <button
-                            onClick={handleClearAll}
-                            disabled={entries.length === 0}
-                            className="flex-1 sm:flex-none inline-flex items-center justify-center px-3 py-2 border border-red-200 text-sm font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                        >
-                            <Trash2 className="w-4 h-4 mr-2" />
-                            Clear All
-                        </button>
-                        
-                        <button
-                            onClick={copyToClipboard}
-                            disabled={entries.length === 0}
-                            className={`flex-1 sm:flex-none inline-flex items-center justify-center px-3 py-2 border text-sm font-medium rounded-md shadow-sm transition-all ${
-                                copied 
-                                ? 'bg-green-600 border-green-600 text-white' 
-                                : 'border-gray-300 text-gray-700 bg-white hover:bg-gray-50'
-                            } disabled:opacity-50 disabled:cursor-not-allowed`}
-                        >
-                            {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-                            {copied ? 'Copied' : 'Copy'}
-                        </button>
-                        
-                        <button
-                            onClick={downloadCSV}
-                            disabled={entries.length === 0}
-                            className="flex-1 sm:flex-none inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                            <Download className="w-4 h-4 mr-2" />
-                            CSV
-                        </button>
-                    </div>
-                </div>
-
-                <div className="flex-1 bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col">
-                    {entries.length === 0 ? (
-                        <EmptyState />
-                    ) : (
-                        <ReceiptTable 
-                            entries={entries} 
-                            onDelete={handleDelete}
-                            onUpdate={handleUpdate}
-                        />
                     )}
                 </div>
-            </div>
 
-        </div>
-      </main>
+                {/* Data Table Column */}
+                <div className="lg:col-span-3 flex flex-col h-full min-h-[500px]">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 space-y-2 sm:space-y-0">
+                        <h2 className="text-lg font-semibold text-gray-900 flex items-center">
+                            <ImageIcon className="w-5 h-5 text-gray-400 mr-2" />
+                            {currentBatch?.name} <span className="ml-2 bg-gray-100 text-gray-600 py-0.5 px-2 rounded-full text-xs">{displayedEntries.length} items</span>
+                        </h2>
+                        
+                        <div className="flex space-x-2">
+                            <button
+                                onClick={copyToClipboard}
+                                disabled={displayedEntries.length === 0}
+                                className={`flex-1 sm:flex-none inline-flex items-center justify-center px-3 py-2 border text-sm font-medium rounded-md shadow-sm transition-all ${
+                                    copied 
+                                    ? 'bg-green-600 border-green-600 text-white' 
+                                    : 'border-gray-300 text-gray-700 bg-white hover:bg-gray-50'
+                                } disabled:opacity-50`}
+                            >
+                                {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
+                                {copied ? 'Copied' : 'Copy'}
+                            </button>
+                            
+                            <button
+                                onClick={downloadCSV}
+                                disabled={displayedEntries.length === 0}
+                                className="flex-1 sm:flex-none inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50"
+                            >
+                                <Download className="w-4 h-4 mr-2" />
+                                Export CSV
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="flex-1 bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col">
+                        {displayedEntries.length === 0 ? (
+                            <EmptyState />
+                        ) : (
+                            <ReceiptTable 
+                                entries={displayedEntries} 
+                                onDelete={handleDeleteEntry}
+                                onUpdate={handleUpdateEntry}
+                            />
+                        )}
+                    </div>
+                </div>
+            </div>
+          </main>
+      </div>
+
+      {/* Overlay for mobile sidebar */}
+      {showHistory && (
+        <div 
+            className="fixed inset-0 bg-black bg-opacity-50 z-20 lg:hidden"
+            onClick={() => setShowHistory(false)}
+        />
+      )}
     </div>
   );
 };
