@@ -16,6 +16,25 @@ export const fileToGenerativePart = async (file: File): Promise<string> => {
   });
 };
 
+// Some browsers / OS combinations may not set file.type.
+// Fallback based on file extension so Gemini gets a supported mimeType.
+const getMimeType = (file: File): string => {
+  if (file.type && file.type.trim().length > 0) {
+    return file.type;
+  }
+
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+  if (name.endsWith(".png")) return "image/png";
+  if (name.endsWith(".gif")) return "image/gif";
+  if (name.endsWith(".webp")) return "image/webp";
+  if (name.endsWith(".pdf")) return "application/pdf";
+
+  throw new Error(
+    `Unsupported file type for Gemini. Please upload a JPG, PNG, GIF, WEBP, or PDF receipt. (Got: "${file.name}")`
+  );
+};
+
 const receiptSchema: Schema = {
   type: Type.OBJECT,
   properties: {
@@ -45,13 +64,16 @@ const receiptSchema: Schema = {
 };
 
 export const processReceiptImage = async (file: File, nextInvoiceId: number): Promise<Omit<ReceiptEntry, 'batchId'>> => {
-  const apiKey = process.env.API_KEY;
+  // NOTE: the env variable name must match how you configure it locally and on Vercel.
+  // If you prefer GEMINI_API_KEY, set it there and change this line accordingly.
+  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
   if (!apiKey) {
     throw new Error("API Key is missing.");
   }
 
   const ai = new GoogleGenAI({ apiKey });
   const base64Data = await fileToGenerativePart(file);
+  const mimeType = getMimeType(file);
 
   const model = "gemini-2.5-flash"; // Excellent for vision and document tasks
 
@@ -62,7 +84,7 @@ export const processReceiptImage = async (file: File, nextInvoiceId: number): Pr
         parts: [
           {
             inlineData: {
-              mimeType: file.type,
+              mimeType,
               data: base64Data
             }
           },
