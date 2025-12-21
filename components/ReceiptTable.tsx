@@ -10,6 +10,7 @@ interface ReceiptTableProps {
 
 export const ReceiptTable: React.FC<ReceiptTableProps> = ({ entries, onDelete, onUpdate }) => {
   const [previewFile, setPreviewFile] = useState<{url: string, type: 'image' | 'pdf'} | null>(null);
+  const [selectedEntry, setSelectedEntry] = useState<ReceiptEntry | null>(null);
 
   const formatCurrency = (val: number) => {
     if (val === 0) return '-';
@@ -28,8 +29,9 @@ export const ReceiptTable: React.FC<ReceiptTableProps> = ({ entries, onDelete, o
   const isPdf = (fileName: string) => fileName.toLowerCase().endsWith('.pdf');
 
   return (
-    <>
-      <div className="overflow-x-auto shadow ring-1 ring-black ring-opacity-5 md:rounded-lg">
+    <div className="flex flex-col lg:flex-row gap-4">
+      {/* Main Table */}
+      <div className="flex-1 overflow-x-auto shadow ring-1 ring-black ring-opacity-5 md:rounded-lg">
         <table className="min-w-full divide-y divide-gray-300 bg-white">
           <thead className="bg-gray-50">
             <tr>
@@ -64,7 +66,14 @@ export const ReceiptTable: React.FC<ReceiptTableProps> = ({ entries, onDelete, o
           </thead>
           <tbody className="divide-y divide-gray-200 bg-white">
             {entries.map((entry) => (
-              <tr key={entry.id} className="hover:bg-gray-50 transition-colors">
+              <tr 
+                key={entry.id} 
+                className={`transition-colors cursor-pointer ${
+                  selectedEntry?.id === entry.id ? 'bg-indigo-50' : 'hover:bg-gray-50'
+                }`}
+                onClick={() => setSelectedEntry(entry)}
+                onMouseEnter={() => !selectedEntry && setSelectedEntry(entry)}
+              >
                 <td className="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-gray-900 sm:pl-6">
                   <input
                       type="number"
@@ -182,6 +191,77 @@ export const ReceiptTable: React.FC<ReceiptTableProps> = ({ entries, onDelete, o
         </table>
       </div>
 
+      {/* Side Panel - Receipt Preview */}
+      {selectedEntry && (
+        <div className="w-full lg:w-80 flex-shrink-0 bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden lg:sticky lg:top-4 h-fit lg:max-h-[calc(100vh-2rem)] flex flex-col">
+          <div className="p-3 border-b bg-gray-50 flex items-center justify-between">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-gray-900 truncate">{selectedEntry.store}</p>
+              <p className="text-xs text-gray-500">#{selectedEntry.invoiceNumber} • {selectedEntry.date}</p>
+            </div>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedEntry(null);
+              }}
+              className="ml-2 p-1 hover:bg-gray-200 rounded text-gray-500"
+              title="Close preview"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          
+          <div className="flex-1 overflow-auto bg-gray-900 p-4 flex items-center justify-center min-h-[400px] lg:min-h-0">
+            {isPdf(selectedEntry.fileName) ? (
+              <div className="w-full h-full flex items-center justify-center">
+                <iframe 
+                  src={selectedEntry.imageUrl} 
+                  className="w-full h-[600px] border-0" 
+                  title="PDF Preview"
+                />
+              </div>
+            ) : (
+              <img 
+                src={selectedEntry.imageUrl} 
+                alt="Receipt" 
+                className="max-w-full max-h-full object-contain"
+              />
+            )}
+          </div>
+
+          <div className="p-3 border-t bg-gray-50">
+            <div className="grid grid-cols-2 gap-2 text-xs mb-2">
+              <div>
+                <span className="text-gray-500">Repairs:</span>
+                <span className="ml-2 font-mono font-semibold text-gray-900">
+                  {selectedEntry.repairs ? `$${selectedEntry.repairs.toFixed(2)}` : '-'}
+                </span>
+              </div>
+              <div>
+                <span className="text-gray-500">Utilities:</span>
+                <span className="ml-2 font-mono font-semibold text-gray-900">
+                  {selectedEntry.utilities ? `$${selectedEntry.utilities.toFixed(2)}` : '-'}
+                </span>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500 mb-2 italic">{selectedEntry.explanation}</p>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setPreviewFile({
+                  url: selectedEntry.imageUrl,
+                  type: isPdf(selectedEntry.fileName) ? 'pdf' : 'image'
+                });
+              }}
+              className="w-full text-xs text-indigo-600 hover:text-indigo-800 flex items-center justify-center gap-1 py-1 hover:bg-indigo-50 rounded"
+            >
+              <ExternalLink className="w-3 h-3" />
+              Open in full screen
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* File Preview Modal */}
       {previewFile && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-75" onClick={() => setPreviewFile(null)}>
@@ -214,6 +294,6 @@ export const ReceiptTable: React.FC<ReceiptTableProps> = ({ entries, onDelete, o
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 };

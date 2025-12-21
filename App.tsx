@@ -14,7 +14,8 @@ import {
   FolderPlus,
   FolderOpen,
   Edit2,
-  X
+  X,
+  Database
 } from 'lucide-react';
 import { processReceiptImage } from './services/geminiService';
 import { 
@@ -31,6 +32,7 @@ import {
 import { ReceiptEntry, QueueItem, Batch } from './types';
 import { ReceiptTable } from './components/ReceiptTable';
 import { EmptyState } from './components/EmptyState';
+import { BackupManager } from './components/BackupManager';
 
 // Maximum number of concurrent API calls
 const MAX_CONCURRENT_UPLOADS = 3;
@@ -50,6 +52,7 @@ const App: React.FC = () => {
   const [loadingStorage, setLoadingStorage] = useState(true);
   const [showHistory, setShowHistory] = useState(false);
   const [isEditingBatchName, setIsEditingBatchName] = useState(false);
+  const [showBackupManager, setShowBackupManager] = useState(false);
   
   // Refs
   const lastAssignedIdRef = useRef<number>(0);
@@ -76,11 +79,11 @@ const App: React.FC = () => {
     const init = async () => {
       try {
         // Load Batches
-        let loadedBatches = loadBatches();
+        let loadedBatches = await loadBatches();
         
         // Safety check: Ensure at least one batch exists
         if (loadedBatches.length === 0) {
-            const defaultBatch = createBatch("Batch 1");
+            const defaultBatch = await createBatch("Batch 1");
             loadedBatches = [defaultBatch];
         }
         
@@ -185,11 +188,11 @@ const App: React.FC = () => {
     removeEntry(id).catch(err => console.error("Delete failed", err));
   };
 
-  const handleUpdateEntry = (id: string, field: keyof ReceiptEntry, value: string | number) => {
+  const handleUpdateEntry = async (id: string, field: keyof ReceiptEntry, value: string | number) => {
     setAllEntries(prev => prev.map(e => {
         if (e.id === id) {
             const updated = { ...e, [field]: value };
-            updateEntry(updated);
+            updateEntry(updated).catch(err => console.error("Failed to update entry", err));
             return updated;
         }
         return e;
@@ -198,9 +201,9 @@ const App: React.FC = () => {
 
   // --- Batch Actions ---
 
-  const handleCreateBatch = () => {
+  const handleCreateBatch = async () => {
     const name = `Batch ${batches.length + 1}`;
-    const newBatch = createBatch(name);
+    const newBatch = await createBatch(name);
     setBatches(prev => [...prev, newBatch]);
     setActiveBatchId(newBatch.id);
     lastAssignedIdRef.current = 0; // Reset for new batch
@@ -220,11 +223,11 @@ const App: React.FC = () => {
         await deleteBatch(batchId);
         
         // Refresh batches from source of truth
-        let currentBatches = loadBatches();
+        let currentBatches = await loadBatches();
         
         // Handle case where we deleted the last batch
         if (currentBatches.length === 0) {
-            const newBatch = createBatch("Batch 1");
+            const newBatch = await createBatch("Batch 1");
             currentBatches = [newBatch];
         }
         
@@ -242,11 +245,11 @@ const App: React.FC = () => {
     }
   };
 
-  const handleRenameBatch = (name: string) => {
+  const handleRenameBatch = async (name: string) => {
     if (!name.trim()) return;
     const updatedBatches = batches.map(b => b.id === activeBatchId ? { ...b, name } : b);
     setBatches(updatedBatches);
-    saveBatches(updatedBatches);
+    await saveBatches(updatedBatches);
   };
 
   // CSV Export for CURRENT batch
@@ -370,6 +373,13 @@ const App: React.FC = () => {
                      {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(displayedEntries.reduce((sum, e) => sum + (e.repairs || 0) + (e.utilities || 0), 0))}
                    </span>
                 </div>
+                <button
+                    onClick={() => setShowBackupManager(true)}
+                    className="p-2 rounded-md text-gray-500 hover:bg-gray-100 hover:text-indigo-600 transition-colors"
+                    title="Backup & Data Management"
+                >
+                    <Database className="w-5 h-5" />
+                </button>
                 <a 
                     href="https://docs.google.com/spreadsheets/create" 
                     target="_blank" 
@@ -588,6 +598,11 @@ const App: React.FC = () => {
             className="fixed inset-0 bg-black bg-opacity-50 z-20 lg:hidden"
             onClick={() => setShowHistory(false)}
         />
+      )}
+
+      {/* Backup Manager Modal */}
+      {showBackupManager && (
+        <BackupManager onClose={() => setShowBackupManager(false)} />
       )}
     </div>
   );
