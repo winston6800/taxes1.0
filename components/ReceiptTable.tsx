@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ReceiptEntry } from '../types';
-import { Trash2, ExternalLink, X, FileText } from 'lucide-react';
+import { Trash2, ExternalLink, X, FileText, ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface ReceiptTableProps {
   entries: ReceiptEntry[];
@@ -11,6 +11,7 @@ interface ReceiptTableProps {
 export const ReceiptTable: React.FC<ReceiptTableProps> = ({ entries, onDelete, onUpdate }) => {
   const [previewFile, setPreviewFile] = useState<{url: string, type: 'image' | 'pdf'} | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<ReceiptEntry | null>(null);
+  const [carouselIndex, setCarouselIndex] = useState<number | null>(null);
 
   const formatCurrency = (val: number) => {
     if (val === 0) return '-';
@@ -27,6 +28,42 @@ export const ReceiptTable: React.FC<ReceiptTableProps> = ({ entries, onDelete, o
   };
 
   const isPdf = (fileName: string) => fileName.toLowerCase().endsWith('.pdf');
+
+  // Handle keyboard navigation for carousel
+  useEffect(() => {
+    if (carouselIndex === null) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        navigateCarousel(-1);
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        navigateCarousel(1);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        setCarouselIndex(null);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [carouselIndex, entries.length]);
+
+  const openCarousel = (entry: ReceiptEntry) => {
+    const index = entries.findIndex(e => e.id === entry.id);
+    setCarouselIndex(index >= 0 ? index : 0);
+  };
+
+  const navigateCarousel = (direction: number) => {
+    if (carouselIndex === null) return;
+    const newIndex = carouselIndex + direction;
+    if (newIndex >= 0 && newIndex < entries.length) {
+      setCarouselIndex(newIndex);
+    }
+  };
+
+  const currentCarouselEntry = carouselIndex !== null ? entries[carouselIndex] : null;
 
   return (
     <div className="flex flex-col lg:flex-row gap-4">
@@ -85,10 +122,10 @@ export const ReceiptTable: React.FC<ReceiptTableProps> = ({ entries, onDelete, o
                 <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
                   <div 
                     className="h-10 w-10 rounded overflow-hidden border border-gray-200 cursor-pointer hover:ring-2 hover:ring-indigo-500 relative group flex items-center justify-center bg-gray-50"
-                    onClick={() => setPreviewFile({
-                        url: entry.imageUrl,
-                        type: isPdf(entry.fileName) ? 'pdf' : 'image'
-                    })}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openCarousel(entry);
+                    }}
                   >
                     {isPdf(entry.fileName) ? (
                         <FileText className="text-red-500 w-6 h-6" />
@@ -262,7 +299,162 @@ export const ReceiptTable: React.FC<ReceiptTableProps> = ({ entries, onDelete, o
         </div>
       )}
 
-      {/* File Preview Modal */}
+      {/* Carousel Modal for Verification */}
+      {carouselIndex !== null && currentCarouselEntry && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-90"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setCarouselIndex(null);
+          }}
+        >
+          <div className="relative max-w-6xl w-full h-[90vh] bg-white rounded-lg shadow-2xl overflow-hidden flex flex-col">
+            {/* Header */}
+            <div className="p-4 border-b bg-gray-50 flex items-center justify-between shrink-0">
+              <div className="flex items-center space-x-4">
+                <button
+                  onClick={() => navigateCarousel(-1)}
+                  disabled={carouselIndex === 0}
+                  className="p-2 rounded-md hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  title="Previous (←)"
+                >
+                  <ChevronLeft className="w-5 h-5" />
+                </button>
+                <div className="text-sm font-medium text-gray-700">
+                  Receipt {carouselIndex + 1} of {entries.length}
+                </div>
+                <button
+                  onClick={() => navigateCarousel(1)}
+                  disabled={carouselIndex === entries.length - 1}
+                  className="p-2 rounded-md hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  title="Next (→)"
+                >
+                  <ChevronRight className="w-5 h-5" />
+                </button>
+              </div>
+              <button
+                onClick={() => setCarouselIndex(null)}
+                className="p-2 hover:bg-gray-200 rounded-full text-gray-600"
+                title="Close (Esc)"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Main Content - Side by Side */}
+            <div className="flex-1 flex overflow-hidden">
+              {/* Left Side - Receipt Image */}
+              <div className="w-1/2 bg-gray-900 flex items-center justify-center p-4 overflow-auto">
+                {isPdf(currentCarouselEntry.fileName) ? (
+                  <iframe 
+                    src={currentCarouselEntry.imageUrl} 
+                    className="w-full h-full border-0" 
+                    title="PDF Preview"
+                  />
+                ) : (
+                  <img 
+                    src={currentCarouselEntry.imageUrl} 
+                    alt="Receipt" 
+                    className="max-w-full max-h-full object-contain"
+                  />
+                )}
+              </div>
+
+              {/* Right Side - Receipt Information */}
+              <div className="w-1/2 bg-white p-6 overflow-y-auto">
+                <h2 className="text-xl font-bold text-gray-900 mb-6">Receipt Information</h2>
+                
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Invoice #</label>
+                    <input
+                      type="number"
+                      value={currentCarouselEntry.invoiceNumber}
+                      onChange={(e) => onUpdate(currentCarouselEntry.id, 'invoiceNumber', parseInt(e.target.value) || 0)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
+                    <input
+                      type="text"
+                      value={currentCarouselEntry.date}
+                      onChange={(e) => onUpdate(currentCarouselEntry.id, 'date', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Store</label>
+                    <input
+                      type="text"
+                      value={currentCarouselEntry.store}
+                      onChange={(e) => onUpdate(currentCarouselEntry.id, 'store', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Explanation</label>
+                    <textarea
+                      value={currentCarouselEntry.explanation}
+                      onChange={(e) => onUpdate(currentCarouselEntry.id, 'explanation', e.target.value)}
+                      rows={3}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Repairs ($)</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={currentCarouselEntry.repairs || ''}
+                        onChange={(e) => onUpdate(currentCarouselEntry.id, 'repairs', parseFloat(e.target.value) || 0)}
+                        placeholder="0.00"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Utilities ($)</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={currentCarouselEntry.utilities || ''}
+                        onChange={(e) => onUpdate(currentCarouselEntry.id, 'utilities', parseFloat(e.target.value) || 0)}
+                        placeholder="0.00"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-4 border-t">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-gray-600">Total Amount:</span>
+                      <span className="font-bold text-lg text-gray-900">
+                        ${((currentCarouselEntry.repairs || 0) + (currentCarouselEntry.utilities || 0)).toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="pt-2">
+                    <p className="text-xs text-gray-500">File: {currentCarouselEntry.fileName}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer with Navigation Hints */}
+            <div className="p-3 border-t bg-gray-50 text-xs text-gray-500 text-center shrink-0">
+              Use ← → arrow keys to navigate • Press Esc to close
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* File Preview Modal (Legacy - keeping for full screen option) */}
       {previewFile && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-75" onClick={() => setPreviewFile(null)}>
           <div className="relative max-w-4xl w-full h-[85vh] bg-white rounded-lg shadow-2xl overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>

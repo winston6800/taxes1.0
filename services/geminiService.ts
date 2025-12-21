@@ -28,10 +28,11 @@ const getMimeType = (file: File): string => {
   if (name.endsWith(".png")) return "image/png";
   if (name.endsWith(".gif")) return "image/gif";
   if (name.endsWith(".webp")) return "image/webp";
+  if (name.endsWith(".heic") || name.endsWith(".heif")) return "image/heic";
   if (name.endsWith(".pdf")) return "application/pdf";
 
   throw new Error(
-    `Unsupported file type for Gemini. Please upload a JPG, PNG, GIF, WEBP, or PDF receipt. (Got: "${file.name}")`
+    `Unsupported file type for Gemini. Please upload a JPG, PNG, GIF, WEBP, HEIC, or PDF receipt. (Got: "${file.name}")`
   );
 };
 
@@ -64,11 +65,14 @@ const receiptSchema: Schema = {
 };
 
 export const processReceiptImage = async (file: File, nextInvoiceId: number): Promise<Omit<ReceiptEntry, 'batchId'>> => {
-  // NOTE: the env variable name must match how you configure it locally and on Vercel.
-  // If you prefer GEMINI_API_KEY, set it there and change this line accordingly.
-  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+  // Access environment variables - Vite exposes them via import.meta.env
+  // Also check process.env for compatibility with vite.config.ts define
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || 
+                 import.meta.env.GEMINI_API_KEY || 
+                 (typeof process !== 'undefined' && (process.env.GEMINI_API_KEY || process.env.API_KEY));
+  
   if (!apiKey) {
-    throw new Error("API Key is missing.");
+    throw new Error("API Key is missing. Please set GEMINI_API_KEY in your .env.local file.");
   }
 
   const ai = new GoogleGenAI({ apiKey });

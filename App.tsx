@@ -149,9 +149,10 @@ const App: React.FC = () => {
             });
 
             setQueue(prev => prev.map(i => i.id === nextItem.id ? { ...i, status: 'COMPLETE' } : i));
-          } catch (error) {
-            console.error(error);
-            setQueue(prev => prev.map(i => i.id === nextItem.id ? { ...i, status: 'ERROR', error: 'Failed to extract' } : i));
+          } catch (error: any) {
+            console.error("Error processing receipt:", error);
+            const errorMessage = error?.message || 'Failed to extract receipt data';
+            setQueue(prev => prev.map(i => i.id === nextItem.id ? { ...i, status: 'ERROR', error: errorMessage } : i));
           }
         }
       }
@@ -169,7 +170,27 @@ const App: React.FC = () => {
     if (!files || files.length === 0) return;
     const fileArray = Array.from(files);
     
-    const newItems: QueueItem[] = fileArray.map(file => {
+    // Validate file types
+    const validExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.pdf'];
+    const validFiles: File[] = [];
+    const invalidFiles: string[] = [];
+    
+    fileArray.forEach(file => {
+      const ext = '.' + file.name.split('.').pop()?.toLowerCase();
+      if (validExtensions.includes(ext)) {
+        validFiles.push(file);
+      } else {
+        invalidFiles.push(file.name);
+      }
+    });
+    
+    if (invalidFiles.length > 0) {
+      alert(`Invalid file types: ${invalidFiles.join(', ')}\n\nSupported formats: JPG, PNG, GIF, WEBP, HEIC, PDF`);
+    }
+    
+    if (validFiles.length === 0) return;
+    
+    const newItems: QueueItem[] = validFiles.map(file => {
         lastAssignedIdRef.current += 1;
         return {
             id: crypto.randomUUID(),
@@ -534,9 +555,20 @@ const App: React.FC = () => {
                                     ></div>
                                 </div>
                               </div>
-                              <div className="flex flex-wrap gap-3 text-xs text-gray-500">
-                                 {pendingOrProcessing > 0 && <div className="flex items-center text-blue-600"><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Processing</div>}
-                                 {errorsInQueue > 0 && <div className="flex items-center text-red-600"><AlertCircle className="w-3 h-3 mr-1" /> Errors</div>}
+                              <div className="space-y-2">
+                                <div className="flex flex-wrap gap-3 text-xs text-gray-500">
+                                  {pendingOrProcessing > 0 && <div className="flex items-center text-blue-600"><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Processing</div>}
+                                  {errorsInQueue > 0 && <div className="flex items-center text-red-600"><AlertCircle className="w-3 h-3 mr-1" /> {errorsInQueue} Error(s)</div>}
+                                </div>
+                                {errorsInQueue > 0 && (
+                                  <div className="space-y-1">
+                                    {queue.filter(i => i.status === 'ERROR').map(item => (
+                                      <div key={item.id} className="text-xs text-red-600 bg-red-50 p-2 rounded">
+                                        <strong>{item.file.name}:</strong> {item.error || 'Unknown error'}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
                           </div>
                       </div>
