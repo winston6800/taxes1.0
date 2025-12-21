@@ -15,6 +15,10 @@ View your app in AI Studio: https://ai.studio/apps/drive/10ihoQvbmj-n1f_KDpyQnv3
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Create a `.env.local` file and set:
+   - `GEMINI_API_KEY` - Your Gemini API key
+   - `VITE_APP_PASSWORD` - (Optional) Custom password to protect the app. If not set, defaults to "mom2024"
 3. Run the app:
    `npm run dev`
+
+**Note:** The app is password-protected. On first load, you'll be prompted to enter the password. Authentication persists for the browser session.
