@@ -298,17 +298,15 @@ const App: React.FC = () => {
   };
 
   const copyToClipboard = () => {
-    const headers = ["invoice#", "date", "explanation", "store", "repairs", "utilities", "filename"];
+    // Only copy date through utilities (no invoice#, no filename, no headers)
     const rows = displayedEntries.map(e => [
-      e.invoiceNumber,
       e.date,
       e.explanation,
       e.store,
       e.repairs || '', 
-      e.utilities || '',
-      e.fileName
+      e.utilities || ''
     ]);
-    const tsvContent = [headers.join('\t'), ...rows.map(r => r.join('\t'))].join('\n');
+    const tsvContent = rows.map(r => r.join('\t')).join('\n');
     navigator.clipboard.writeText(tsvContent).then(() => {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
