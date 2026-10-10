@@ -79,7 +79,7 @@ export const processReceiptImage = async (file: File, nextInvoiceId: number): Pr
   const base64Data = await fileToGenerativePart(file);
   const mimeType = getMimeType(file);
 
-  const model = "gemini-2.5-flash"; // Excellent for vision and document tasks
+  const model = "gemini-3.8-flash"; // Latest Flash model for vision and document tasks
 
   try {
     const response = await ai.models.generateContent({
